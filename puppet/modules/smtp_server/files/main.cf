@@ -1,13 +1,18 @@
-mail_owner = postfix
-bounce_notice_recipient = postmaster
+# Configuracion SASL
+smtpd_sasl_auth_enable = yes
 smtpd_sasl_authenticated_header = no
 broken_sasl_auth_clients = yes
+smtpd_sasl_type = dovecot
+smtpd_sasl_path = private/dovecot_auth
+
+mail_owner = postfix
+bounce_notice_recipient = postmaster
 minimal_backoff_time = 300s
 always_add_missing_headers = yes
 # smtpd_tls_key_file = /opt/zimbra/conf/smtpd.key
 # smtpd_helo_required = yes
 virtual_transport = error
-smtpd_recipient_restrictions = reject_non_fqdn_recipient, permit_sasl_authenticated, permit_mynetworks, reject_unauth_destination, reject_unlisted_recipient, reject_rbl_client bl.spamcop.net reject_rbl_client xbl.spamhaus.org reject_rbl_client cbl.abuseat.org reject_rbl_client relays.mail-abuse.org, permit
+smtpd_recipient_restrictions = reject_non_fqdn_recipient, permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination, reject_unlisted_recipient, reject_rbl_client bl.spamcop.net reject_rbl_client xbl.spamhaus.org reject_rbl_client cbl.abuseat.org reject_rbl_client relays.mail-abuse.org, permit
 smtpd_reject_unlisted_recipient = no
 bounce_queue_lifetime = 5d
 local_header_rewrite_clients = permit_mynetworks,permit_sasl_authenticated
@@ -18,7 +23,6 @@ lmtp_host_lookup = dns
 delay_warning_time = 0h
 queue_run_delay = 300s
 mynetworks = 127.0.0.0/8 192.168.0.0/16
-#smtpd_sasl_auth_enable = yes
 #smtpd_tls_loglevel = 1
 #maximal_backoff_time = 4000s
 inet_protocols = ipv4
@@ -36,3 +40,4 @@ lmtp_connection_cache_destinations =
 policy_time_limit = 3600
 mailbox_size_limit = 0
 disable_dns_lookups = no
+
