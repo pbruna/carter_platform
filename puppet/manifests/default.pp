@@ -1,6 +1,7 @@
 include base_packages
 include smtp_server
 include db_master_server
+include stats_server
 
 class base_packages {
 
@@ -17,5 +18,4 @@ class base_packages {
 		mode => "644",
 		content => "SELINUX=permissive\nSELINUXTYPE=targeted\n"
 	}
-	
 }
