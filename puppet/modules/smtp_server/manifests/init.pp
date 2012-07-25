@@ -37,6 +37,8 @@ class smtp_server {
 	}
 	
 	class auth_sasl_server {
+		$mysql_auth_servers = ["localhost"]
+		
 		package {"dovecot":
 			ensure => present
 		}
@@ -72,7 +74,7 @@ class smtp_server {
 			group => "root",
 			mode => "644",
 			path => "/etc/dovecot/dovecot-sql.conf",
-			source => "puppet:///modules/smtp_server/dovecot-sql.conf",
+			content => template("smtp_server/dovecot-sql.conf.erb"),
 			require => [Package["dovecot"], File["dovecot_conf"]],
 			notify => Service["dovecot"]
 		}
