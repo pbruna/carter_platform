@@ -8,13 +8,23 @@ class smtp_server {
 		}
 	
 		file {"postfix_main":
-			ensure => present,
+			ensure => file,
 			owner => "root",
 			group => "root",
 			path => "/etc/postfix/main.cf",
 			require => Package["postfix"],
 			notify => Service["postfix"],
-			source => "puppet:///modules/smtp_server/main.cf"
+			content => template("smtp_server/main.cf.erb")
+		}
+		
+		file {"postfix_master":
+			ensure => present,
+			owner => "root",
+			group => "root",
+			path => "/etc/postfix/master.cf",
+			require => Package["postfix"],
+			notify => Service["postfix"],
+			source => "puppet:///modules/smtp_server/master.cf"
 		}
 	
 		service {"postfix":
@@ -44,6 +54,16 @@ class smtp_server {
 			source => "puppet:///modules/smtp_server/dovecot.conf",
 			require => Package["dovecot"],
 			notify => Service["dovecot"]
+		}
+		
+		file {"dovecot_logrotate":
+			ensure => file,
+			owner => "root",
+			group => "root",
+			mode => "644",
+			path => "/etc/logrotate.d/dovecot",
+			source => "puppet:///modules/smtp_server/dovecot_logrotate",
+			require => Package["dovecot"],
 		}
 		
 		file {"dovecot_sql":
