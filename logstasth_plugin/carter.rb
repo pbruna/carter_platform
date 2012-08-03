@@ -62,19 +62,20 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
     
     def create_event(event_id, event)
       fields = event.fields
-      @mongodb.collection(mongo_collection).insert(
+      mongo_collection.insert(
         "request_id" => event_id,
         "queue_id" => fields["request_id"].first,
         "src_hostname" => fields["src_hostname"].first,
         "src_ipaddress" => fields["src_ipaddress"].first,
         "account_id" => fields["account_id"].first,
         "running" => 1,
-        "created_at" => DateTime.parse(event.timestamp).to_time.utc
+        "created_at" => time_to_utc(event.timestamp)
       )
     end
     
     def update_event(event_id, event)
-      request = @mongodb.collection(mongo_collection).find_one("request_id" => event_id, "running" => 1)
+      # request_id can be duplicated, but only one can be running
+      request = mongo_collection.find_one("request_id" => event_id, "running" => 1)
       if event.tags.include?("queue_run")
         record_queue_run(request, event)
       elsif event.tags.include?("smtp_run")
@@ -86,17 +87,40 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
     
     def record_queue_run(request, event)
       fields = event.fields
-      @mongodb.collection(mongo_collection).update({"request_id" => request["request_id"]}, {"$set" => {
+      mongo_collection.update({"request_id" => request["request_id"]}, {"$set" => {
         "src_email_address" => fields["src_email_address"].first,
         "size" => fields["size"].first.to_i,
         "dst_qty" => fields["dst_qty"].first.to_i,
-        "updated_at" => DateTime.parse(event.timestamp).to_time.utc
+        "updated_at" => time_to_utc(event.timestamp)
       }, "$inc" => {"queue_runs" => 1}})
     end
     
     def record_smtp_run(request, event)
-      
+      fields = event.fields
+      mongo_collection.update({"request_id" => request["request_id"]}, {"$addToSet" => {
+        "messages" => {
+          "dst_email_address" => fields["dst_email_address"].first,
+          "dst_server_ipaddress" => fields["dst_server_ipaddress"].nil? ? "" : fields["dst_server_ipaddress"].first,
+          "dst_server_name" => fields["dst_server_name"].nil? ? "" : fields["dst_server_name"].first,
+          "dst_port" => fields["dst_port"].nil? ? "" : fields["dst_port"].first.to_i,
+          "status" => fields["status"].first,
+          "delay" => fields["delay"].first.to_i,
+          "response_text" => fields["response_text"].first,
+          "created_at" => time_to_utc(event.timestamp)
+        }
+      }})
+      # TODO
+      mongo_collection.update({"request_id" => request["request_id"]}, {"$inc" => {"delay" => fields["delay"].first.to_i}})
+      mongo_collection.update({"request_id" => request["request_id"]}, {"$addToSet" => {"dst_email_address" => fields["dst_email_address"].first}})
+      mongo_collection.update({"request_id" => request["request_id"]}, {"$set" => {"update_at" => time_to_utc(event.timestamp)}, "$inc" => {"dst_sent_qty" => 1 }})
     end
+    
+    # ,
+    #       "$inc" => {"delay" => fields["delay"].first.to_i},
+    #       "$inc" => {"dst_sent_qty" => 1 },
+    #       "$addToSet" => {"dst_email_address" => fields["dst_email_address"].first},
+    #       "$set" => {"update_at" => time_to_utc(event.timestamp) }
+    #     
     
     def record_queue_finish(request, event)
       
@@ -104,15 +128,16 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
     
     # Is a new event if the request_id does not exists, or if exists and is not running
     def is_new_event?(event)
-      return false unless event.tags.include?("new_request")
-      event_id = get_id(event)
-      result = @mongodb.collection(mongo_collection).find("request_id" => event_id).to_a
-      if result.size < 1
-        return true
-      else
-        result = @mongodb.collection(mongo_collection).find("request_id" => event_id, "running" => 0).to_a
-        result.size < 1
-      end
+      event.tags.include?("new_request")
+      # return false unless event.tags.include?("new_request")
+      #      event_id = get_id(event)
+      #      result = mongo_collection.find("request_id" => event_id).to_a
+      #      if result.size < 1
+      #        return true
+      #      else
+      #        result = mongo_collection.find("request_id" => event_id, "running" => 0).to_a
+      #        result.size < 1
+      #      end
     end
     
     def get_id(event) 
@@ -121,7 +146,11 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
   
   private
   def mongo_collection
-    @collection
+    @mongodb.collection(@collection)
+  end
+  
+  def time_to_utc(time)
+    DateTime.parse(time).to_time.utc
   end
     
 end
