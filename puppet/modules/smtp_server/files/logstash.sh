@@ -21,7 +21,8 @@
 ### END INIT INFO
 
 # Amount of memory for Java
-JAVAMEM=256M
+JAVAMinMem=256M
+JAVAMaxMem=1024M
 
 # Location of logstash files
 LOCATION=/opt/logstash
@@ -35,7 +36,7 @@ LOGFILE="/var/log/logstash.log"
 PATTERNSPATH="/opt/logstash/patterns"
 PLUGINSPATH="/opt/logstash/plugins"
 JARNAME=logstash-monolithic.jar
-ARGS="-Xmx$JAVAMEM -Xms$JAVAMEM -jar ${JARNAME} agent --config ${CONFIG_DIR} --log ${LOGFILE} --grok-patterns-path ${PATTERNSPATH} --pluginpath ${PLUGINSPATH}"
+ARGS="-Xmx$JAVAMaxMem -Xms$JAVAMinMem -jar ${JARNAME} agent --config ${CONFIG_DIR} --log ${LOGFILE} --grok-patterns-path ${PATTERNSPATH} --pluginpath ${PLUGINSPATH}"
 SCRIPTNAME=/etc/init.d/logstash
 PID_FILE="/var/run/logstash-agent.pid"
 base=logstash
