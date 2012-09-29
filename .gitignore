@@ -1,1 +1,2 @@
 App/*
+puppet/modules/smtp_server/files/*.jar

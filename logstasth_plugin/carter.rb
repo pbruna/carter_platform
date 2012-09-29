@@ -10,9 +10,13 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
 
   config_name "carter"
   plugin_status "beta"
-  TAGS = %w( new_request queue_run smtp_run queue_finish )
+  TAGS = %w( new_request queue_run smtp_run queue_finish message_id amavis_run )
   STATS_COLLECTION = "metrics_daily"
+  REJECT_KEYS = %( facility facility_label message pid priority program severity severity_label )
 
+  # account name to store the information
+  config :account_id, :validate => :string, :required => true
+  
   # your mongodb host
   config :host, :validate => :string, :required => true
 
@@ -49,11 +53,10 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
       return unless output?(event)
       return unless (event.tags & TAGS).size > 0
       record event
-      #@mongodb.collection(event.sprintf(@collection)).insert(event.to_hash)
     end
 
     def record(event)
-      event_id = get_id(event)
+      event_id = get_event_id(event)
       if is_new_event?(event)
         create_event(event_id, event)
       else
@@ -62,29 +65,34 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
     end
 
     def create_event(event_id, event)
-      fields = event.fields
-      mongo_collection.insert(
-        "request_id" => event_id,
-        "queue_id" => fields["request_id"].first,
-        "src_hostname" => fields["src_hostname"].first,
-        "src_ipaddress" => fields["src_ipaddress"].first,
-        "account_id" => fields["account_id"].first,
-        "running" => 1,
-        "created_at" => time_to_utc(event.timestamp)
-      )
+      fields = get_event_fields(event)
+      fields.merge!({"running" => 1,
+                     "created_at" => time_to_utc(fields["timestamp"]),
+                     "request_id" => event_id,
+                     "account_id" => @account_id })
+
+      mongo_collection.insert(fields)
+
       # We set the stats
-      date = time_to_date(event.timestamp)
-      account_id = fields["account_id"].first
-      statement = {"$inc" => {"request_qty" => 1}}
-      update_daily_stats(account_id, date,statement)
+      date = time_to_date(fields["timestamp"])
+      statment = {"$inc" => {"request_qty" => 1}}
+      update_daily_stats(@account_id, date, statment)
     end
 
     def update_event(event_id, event)
+      # some amavis dont have queue_id so we look for message_id
+      if event.tags.include?("amavis_run")
+        request = mongo_collection.find_one( "message_id" => event["message_id"].first )
+        record_amavis_run(request["_id"], event)
+      end
+      
       # request_id can be duplicated, but only one can be running
       request = mongo_collection.find_one("request_id" => event_id, "running" => 1)
       unless request.nil?
         if event.tags.include?("queue_run")
           record_queue_run(request["_id"], event)
+        elsif event.tags.include?("message_id")
+          record_message_id(request["_id"], event)
         elsif event.tags.include?("smtp_run")
           record_smtp_run(request["_id"], event)
         elsif event.tags.include?("queue_finish")
@@ -95,76 +103,101 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
 
     # We record everytime the request is put on the queue
     def record_queue_run(request_id, event)
-      fields = event.fields
-      mongo_collection.update({"_id" => request_id}, {"$set" => {
-                                                        "src_email_address" => fields["src_email_address"].first,
-                                                        "size" => fields["size"].first.to_i,
-                                                        "dst_qty" => fields["dst_qty"].first.to_i,
-                                                        "updated_at" => time_to_utc(event.timestamp)
-      }, "$inc" => {"queue_runs" => 1}})
+      fields = get_event_fields(event)
+      fields.merge!( {"updated_at" => time_to_utc(fields["timestamp"]) } )
+      mongo_collection.update({"_id" => request_id}, {"$set" => fields, "$inc" => {"queue_runs" => 1}})
+
       # We set the stats only if the first time in queue
-      if mongo_collection.find_one({"_id" => request_id}, {:fields => ["queue_runs"]})["queue_runs"] < 2
-        date = time_to_date(event.timestamp)
-        account_id = get_account_id_from_request(request_id)
-        #TODO: Mejorar este codigo
-        src_email_address = @mongodb.collection(STATS_COLLECTION).find_one({"account_id" => account_id, "date" => date, "src_emails.address" => fields["src_email_address"].first})
-        if src_email_address.nil?
-          statement = {"$inc" => {"request_bytes" => fields["size"].first.to_i}, "$addToSet" => {"src_emails" => {"address" => fields["src_email_address"].first}}}
-        else
-          statement = {"$inc" => {"request_bytes" => fields["size"].first.to_i}}
-        end
-        update_daily_stats(account_id, date, statement)
-        @mongodb.collection(STATS_COLLECTION).update({"account_id" => account_id, "date" => date, "src_emails.address" => fields["src_email_address"].first},
-                                                     {"$inc" => {"src_emails.$.count" => 1}})
+      # this is because we are adding emails address and it does make not sense
+      # to add the address more than one for the same message
+      return unless first_queue_run?(request_id)
+      date = time_to_date(fields["timestamp"])
+      account_id = @account_id
+      statment = {"$inc" => {"request_bytes" => fields["size"]}}
+
+      # We add the email address if is not already on the daily stats
+      unless email_exists_on_stats?(account_id, date, fields["src_email_address"], "src")
+        statment.merge!({"$addToSet" => {"src_emails" => {"address" => fields["src_email_address"]}}})
+      end
+
+      update_daily_stats(account_id, date, statment)
+      @mongodb.collection(STATS_COLLECTION).update({"account_id" => account_id, "date" => date, "src_emails.address" => fields["src_email_address"]},
+                                                   {"$inc" => {"src_emails.$.count" => 1}})
+    end
+
+    def record_message_id(request_id, event)
+      fields = get_event_fields(event)
+      request = mongo_collection.find_one({"message_id" => fields["message_id"]}, {:fields => ["_id", "message_id", "request_id"] })
+      if request.nil?
+        mongo_collection.update({"_id" => request_id}, {"$set" => fields} )
+      else
+        # We remove the new request comming from amavis
+        # and add the request_id to the original request
+        mongo_collection.remove({"request_id" => get_event_id(event)})
+        mongo_collection.update({"_id" => request["_id"]}, {"$set" => {"running" => 1, "request_id" => [request["request_id"], get_event_id(event)].flatten }})
       end
     end
 
     # We record every try to sent an email
     # The status can be = sent, deferred, bounced
     def record_smtp_run(request_id, event)
-      fields = event.fields
-      mongo_collection.update({"_id" => request_id}, {"$addToSet" => {
-                                                        "messages" => {
-                                                          "dst_email_address" => fields["dst_email_address"].first,
-                                                          "dst_server_ipaddress" => fields["dst_server_ipaddress"].nil? ? "" : fields["dst_server_ipaddress"].first,
-                                                          "dst_server_name" => fields["dst_server_name"].nil? ? "" : fields["dst_server_name"].first,
-                                                          "dst_port" => fields["dst_port"].nil? ? "" : fields["dst_port"].first.to_i,
-                                                          "status" => fields["status"].first,
-                                                          "delay" => fields["delay"].first.to_i,
-                                                          "response_text" => fields["response_text"].first,
-                                                          "created_at" => time_to_utc(event.timestamp)
-                                                        }
-      }})
+      fields = get_event_fields(event)
+      fields.merge!({"created_at" => time_to_utc(fields["timestamp"])})
+      mongo_collection.update({"_id" => request_id}, {"$addToSet" => { "messages" => fields }})
+
       # TODO
-      mongo_collection.update({"_id" => request_id}, {"$inc" => {"delay" => fields["delay"].first.to_i}})
-      mongo_collection.update({"_id" => request_id}, {"$addToSet" => {"dst_email_address" => fields["dst_email_address"].first}})
-      mongo_collection.update({"_id" => request_id}, {"$set" => {"updated_at" => time_to_utc(event.timestamp)}, "$inc" => {"dst_sent_qty" => 1 }})
+      mongo_collection.update({"_id" => request_id}, {"$inc" => { "delay" => fields["delay"], "dst_sent_qty" => 1 },
+                                                      "$addToSet" => { "dst_email_address" => fields["dst_email_address"] },
+                                                      "$set" => { "updated_at" => time_to_utc(event.timestamp) }
+                                                      })
 
       # Update Stats
-      date = time_to_date(event.timestamp)
-      account_id = get_account_id_from_request(request_id)
-      #TODO: Mejorar este codigo
-      dst_email_address = @mongodb.collection(STATS_COLLECTION).find_one({"account_id" => account_id, "date" => date, "dst_emails.address" => fields["dst_email_address"].first})
-      if dst_email_address.nil?
-        statement = {"$inc" => {"sent_qty" => 1}, "$addToSet" => {"dst_emails" => {"address" => fields["dst_email_address"].first}}}
-      else
-        statement = {"$inc" => {"sent_qty" => 1}}
+      date = time_to_date(fields["timestamp"])
+      account_id = @account_id
+      statment = {"$inc" => {"sent_qty" => 1}}
+
+      # We add the email address if is not already on the daily stats
+      unless email_exists_on_stats?(account_id, date, fields["dst_email_address"], "dst")
+        statment.merge!({"$addToSet" => {"dst_emails" => {"address" => fields["dst_email_address"]}}})
       end
-      update_daily_stats(account_id, date, statement)
-      @mongodb.collection(STATS_COLLECTION).update({"account_id" => account_id, "date" => date, "dst_emails.address" => fields["dst_email_address"].first},
-                                                   {"$inc" => {"dst_emails.$.count" => 1}})
+
+      update_daily_stats(account_id, date, statment)
+      @mongodb.collection(STATS_COLLECTION).update({"account_id" => account_id, "date" => date,
+                                                    "dst_emails.address" => fields["dst_email_address"]},
+                                                    {"$inc" => {"dst_emails.$.count" => 1}}
+                                                   )
+
       unless messages_was_sent?(event)
         mongo_collection.update({"_id" => request_id}, {"$inc" => {"sent_failed_qty" => 1}})
-        statement = {"$inc" => {"failed_qty" => 1}}
-        update_daily_stats(account_id, date, statement)
+        statment = {"$inc" => {"failed_qty" => 1}}
+        update_daily_stats(account_id, date, statment)
       end
     end
 
     def record_queue_finish(request_id, event)
-      mongo_collection.update({"_id" => request_id}, {"$set" => {
-                                                        "running" => 0,
-                                                        "closed_at" => time_to_utc(event.timestamp)
-      }})
+      fields = get_event_fields(event)
+      mongo_collection.update({"_id" => request_id}, {"$set" => {"closed_at" => time_to_utc(fields["timestamp"])},
+                                                       "$inc" => { "remove" => 1 }
+                                                    })
+
+     request = mongo_collection.find_one({ "_id" => request_id }, { :fields => ["request_id", "remove"] })
+     if [request["request_id"]].flatten.size == request["remove"]
+       mongo_collection.update({"_id" => request_id}, {"$set" => { "running" => 0 }, "$unset" => { "remove" => 1 }})
+     end
+    end
+    
+    def record_amavis_run(request_id, event)
+      fields = get_event_fields(event)
+      fields.delete("message_id")
+      mongo_collection.update({ "_id" => request_id }, { "$set" => { "amavis_data" => fields }})
+      
+      unless fields["amavis_status"].downcase == "passed"
+        date = time_to_date(fields["timestamp"])
+        account_id = @account_id
+        statment = {"$inc" => {"blocked_qty" => 1}}
+        update_daily_stats(account_id, date, statment)
+      end
+      
     end
 
     # Is a new event if the request_id does not exists, or if exists and is not running
@@ -172,14 +205,35 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
       event.tags.include?("new_request")
     end
 
-    def get_id(event)
-      id = "#{event.fields['request_id'].first}_#{event.fields['logsource'].first}"
+    def get_event_id(event)
+      request_id = event.fields["queue_id"].class == Array ? event.fields["queue_id"].first : event.fields["queue_id"]
+      "#{request_id}_#{event.source_host}"
     end
 
   private
-    def update_daily_stats(account_id, date, statement_hash)
+    def email_exists_on_stats?(account_id, date, email, array_name)
+      email_address = @mongodb.collection(STATS_COLLECTION).find_one({"account_id" => account_id, "date" => date, "#{array_name}_emails.address" => email})
+      !email_address.nil?
+    end
+
+    def first_queue_run?(request_id)
+      mongo_collection.find_one({"_id" => request_id}, {:fields => ["queue_runs"]})["queue_runs"] == 1
+    end
+
+    def get_event_fields(event)
+      fields = event.fields
+      fields.delete_if {|k,v| REJECT_KEYS.include?(k) }
+      fields.each do |k,v|
+        value = v.respond_to?(:first) ? v.first : "#{v}"
+        value = value.to_f if value.match(/^[+-]?(?:(?!0)\d+|0)(?:\.\d+)?$/)
+        fields[k] = value
+      end
+      fields
+    end
+
+    def update_daily_stats(account_id, date, statment_hash)
       mongo_collection = @mongodb.collection(STATS_COLLECTION)
-      mongo_collection.update({"account_id" => account_id, "date" => date}, statement_hash, {:upsert  => true})
+      mongo_collection.update({"account_id" => account_id, "date" => date}, statment_hash, {:upsert  => true})
     end
 
     def mongo_collection
@@ -195,7 +249,7 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
     end
 
     def messages_was_sent?(event)
-      event.fields["status"].first == "sent"
+      event.fields["status"] == "sent"
     end
 
     def get_account_id_from_request(request_id)

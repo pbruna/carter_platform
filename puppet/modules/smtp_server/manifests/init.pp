@@ -75,7 +75,7 @@ class smtp_server {
 			ensure => file,
 			path => "/opt/logstash/logstash-monolithic.jar",
 			mode => "644",
-			source => "puppet:///modules/smtp_server/logstash-1.1.1-monolithic.jar",
+			source => "puppet:///modules/smtp_server/logstash-1.1.2.dev-dh.jar",
 			require => File["/opt/logstash"]
 		}
 		

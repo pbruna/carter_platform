@@ -5,9 +5,12 @@ driver = mysql
 # settings, like: host=sql1.host.org host=sql2.host.org
 #
 # TODO: Hacer esto modificable via Puppet
-connect = <% @mysql_auth_servers.each do |server| %><%= "host=#{server} " -%><% end %> dbname=sasl_users user=dovecot password=dovecot
+connect = <% @mysql_auth_servers.each do |server| %><%= "host=#{server} " -%><% end %> dbname=carter_development user=root
+# connect = host=localhost  dbname=sasl_users user=root
 
 # http://wiki.dovecot.org/Authentication/PasswordSchemes
 #default_pass_scheme = MD5
-password_query = SELECT username AS user, password \
-	FROM users WHERE username = '%n' AND active = 'Y'
+password_query = SELECT sasl_login AS user, sasl_password AS password \
+	FROM users WHERE sasl_login = '%n'
+
+#password_query = SELECT username AS user, password FROM users where username = '%n' 
