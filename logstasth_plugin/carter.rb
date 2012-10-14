@@ -10,9 +10,9 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
 
   config_name "carter"
   plugin_status "beta"
-  TAGS = %w( new_request queue_run smtp_run queue_finish message_id amavis_run )
+  TAGS = %w( new_request queue_run smtp_run queue_finish message_id amavis_run noqueue_run)
   STATS_COLLECTION = "metrics_daily"
-  REJECT_KEYS = %( facility facility_label message pid priority program severity severity_label )
+  REJECT_KEYS = %( facility facility_label message pid priority program severity severity_label)
 
   # account name to store the information
   config :account_id, :validate => :string, :required => true
@@ -70,12 +70,20 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
                      "created_at" => time_to_utc(fields["timestamp"]),
                      "request_id" => event_id,
                      "account_id" => @account_id })
-
-      mongo_collection.insert(fields)
-
+      
       # We set the stats
       date = time_to_date(fields["timestamp"])
       statment = {"$inc" => {"request_qty" => 1}}
+      
+      if event.tags.include?("noqueue_run")
+        fields["queue_id"] = "NOQUEUE"
+        fields["running"] = 0
+        fields["dst_email_address"] = [fields["dst_email_address"]]
+        fields["closed_at"] = time_to_utc(fields["timestamp"])
+        statment = {"$inc" => {"request_qty" => 1, "sent_failed_qty" => 1}}
+      end
+      
+      mongo_collection.insert(fields)
       update_daily_stats(@account_id, date, statment)
     end
 
@@ -202,10 +210,11 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
 
     # Is a new event if the request_id does not exists, or if exists and is not running
     def is_new_event?(event)
-      event.tags.include?("new_request")
+      event.tags.include?("new_request") || event.tags.include?("noqueue_run")
     end
 
     def get_event_id(event)
+      return "NOQUEUE_#{event.source_host}" if event.fields["queue_id"].nil?
       request_id = event.fields["queue_id"].class == Array ? event.fields["queue_id"].first : event.fields["queue_id"]
       "#{request_id}_#{event.source_host}"
     end
