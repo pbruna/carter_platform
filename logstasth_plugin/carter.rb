@@ -8,15 +8,24 @@ require "date"
 
 class LogStash::Outputs::Carter < LogStash::Outputs::Base
 
-  config_name "carter"
-  plugin_status "beta"
+  # only process loglines with any of these tags
   TAGS = %w( new_request queue_run smtp_run queue_finish message_id amavis_run noqueue_run)
+
+  # collection on mongo where to store de kpi
   STATS_COLLECTION = "metrics_daily"
+
+  # reject this key value pair in logline
   REJECT_KEYS = %( facility facility_label message pid priority program severity severity_label)
 
+  # plugin name
+  config_name "carter"
+
+  # plugin stauts
+  plugin_status "beta"
+
   # account name to store the information
-  config :account_id, :validate => :string, :required => true
-  
+  config :account_id, :validate => :string, :required => false
+
   # your mongodb host
   config :host, :validate => :string, :required => true
 
@@ -52,16 +61,16 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
     def receive(event)
       return unless output?(event)
       return unless (event.tags & TAGS).size > 0
+      
+      #get the account_id from the source ip address
+      @account_id ||= get_account_id(event.source_host)
       record event
     end
 
     def record(event)
       event_id = get_event_id(event)
-      if is_new_event?(event)
-        create_event(event_id, event)
-      else
-        update_event(event_id, event)
-      end
+      return create_event(event_id, event) if is_new_event?(event)
+      update_event(event_id, event)
     end
 
     def create_event(event_id, event)
@@ -70,11 +79,11 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
                      "created_at" => time_to_utc(fields["timestamp"]),
                      "request_id" => event_id,
                      "account_id" => @account_id })
-      
+
       # We set the stats
       date = time_to_date(fields["timestamp"])
       statment = {"$inc" => {"request_qty" => 1}}
-      
+
       if event.tags.include?("noqueue_run")
         fields["queue_id"] = "NOQUEUE"
         fields["running"] = 0
@@ -82,7 +91,7 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
         fields["closed_at"] = time_to_utc(fields["timestamp"])
         statment = {"$inc" => {"request_qty" => 1, "sent_failed_qty" => 1}}
       end
-      
+
       mongo_collection.insert(fields)
       update_daily_stats(@account_id, date, statment)
     end
@@ -90,22 +99,15 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
     def update_event(event_id, event)
       # some amavis dont have queue_id so we look for message_id
       if event.tags.include?("amavis_run")
-        request = mongo_collection.find_one( "message_id" => event["message_id"].first )
-        record_amavis_run(request["_id"], event)
-      end
-      
-      # request_id can be duplicated, but only one can be running
-      request = mongo_collection.find_one("request_id" => event_id, "running" => 1)
-      unless request.nil?
-        if event.tags.include?("queue_run")
-          record_queue_run(request["_id"], event)
-        elsif event.tags.include?("message_id")
-          record_message_id(request["_id"], event)
-        elsif event.tags.include?("smtp_run")
-          record_smtp_run(request["_id"], event)
-        elsif event.tags.include?("queue_finish")
-          record_queue_finish(request["_id"], event)
-        end
+        record_amavis_run(event)
+      else
+        # request_id can be duplicated, but only one can be running
+        request = mongo_collection.find_one("request_id" => event_id, "running" => 1)
+        return if request.nil?
+        record_queue_run(request["_id"], event) if event.tags.include?("queue_run")
+        record_message_id(request["_id"], event) if event.tags.include?("message_id")
+        record_smtp_run(request["_id"], event) if event.tags.include?("smtp_run")
+        record_queue_finish(request["_id"], event) if event.tags.include?("queue_finish")
       end
     end
 
@@ -172,7 +174,7 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
       update_daily_stats(account_id, date, statment)
       @mongodb.collection(STATS_COLLECTION).update({"account_id" => account_id, "date" => date,
                                                     "dst_emails.address" => fields["dst_email_address"]},
-                                                    {"$inc" => {"dst_emails.$.count" => 1}}
+                                                   {"$inc" => {"dst_emails.$.count" => 1}}
                                                    )
 
       unless messages_was_sent?(event)
@@ -185,30 +187,33 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
     def record_queue_finish(request_id, event)
       fields = get_event_fields(event)
       mongo_collection.update({"_id" => request_id}, {"$set" => {"closed_at" => time_to_utc(fields["timestamp"])},
-                                                       "$inc" => { "remove" => 1 }
-                                                    })
+                                                      "$inc" => { "remove" => 1 }
+                                                      })
 
-     request = mongo_collection.find_one({ "_id" => request_id }, { :fields => ["request_id", "remove"] })
-     if [request["request_id"]].flatten.size == request["remove"]
-       mongo_collection.update({"_id" => request_id}, {"$set" => { "running" => 0 }, "$unset" => { "remove" => 1 }})
-     end
+      request = mongo_collection.find_one({ "_id" => request_id }, { :fields => ["request_id", "remove"] })
+      if [request["request_id"]].flatten.size == request["remove"]
+        mongo_collection.update({"_id" => request_id}, {"$set" => { "running" => 0 }, "$unset" => { "remove" => 1 }})
+      end
     end
-    
-    def record_amavis_run(request_id, event)
+
+    def record_amavis_run(event)
+      message_id = event["message_id"].first
       fields = get_event_fields(event)
       fields.delete("message_id")
-      mongo_collection.update({ "_id" => request_id }, { "$set" => { "amavis_data" => fields }})
+      mongo_collection.update({ "message_id" => message_id },
+                              { "$set" => { "amavis_data" => fields }},
+                              {:upsert => true})
       
+      # update the blocked_qty in daily_stats if the emails is spam
       unless fields["amavis_status"].downcase == "passed"
         date = time_to_date(fields["timestamp"])
         account_id = @account_id
         statment = {"$inc" => {"blocked_qty" => 1}}
         update_daily_stats(account_id, date, statment)
       end
-      
+
     end
 
-    # Is a new event if the request_id does not exists, or if exists and is not running
     def is_new_event?(event)
       event.tags.include?("new_request") || event.tags.include?("noqueue_run")
     end
@@ -246,7 +251,7 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
     end
 
     def mongo_collection
-      @mongodb.collection(@collection)
+        @mongodb.collection(@collection)
     end
 
     def time_to_utc(time)
@@ -261,9 +266,8 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
       event.fields["status"] == "sent"
     end
 
-    def get_account_id_from_request(request_id)
-      req = mongo_collection.find_one({"_id" => request_id}, {:fields => ["account_id"]})
-      req["account_id"]
+    def get_account_id(src_ipaddress)
+      @mongodb.collection("accounts").find_one({:ipaddress => src_ipaddress}, {:fields => ["_id"]})["_id"]
     end
 
 end
