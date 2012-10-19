@@ -1,10 +1,9 @@
 include base_packages
-include smtp_server
-include db_master_server
-include stats_server
+include catcher
+include mongo_master
+include carter_app
 
 class base_packages {
-
 	package {
 		"file":;
 		"vim-enhanced":;

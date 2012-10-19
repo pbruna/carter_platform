@@ -48,20 +48,16 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
       # TODO(petef): check for errors
       db = Mongo::Connection.new(@host, @port).db(@database)
       auth = true
-      if @user then
-        auth = db.authenticate(@user, @password.value) if @user
-      end
-      if not auth then
-        raise RuntimeError, "MongoDB authentication failure"
-      end
+      auth = db.authenticate(@user, @password.value) if @user
+      raise RuntimeError, "MongoDB authentication failure" unless auth
       @mongodb = db
-    end # def register
+    end
 
   public
     def receive(event)
       return unless output?(event)
       return unless (event.tags & TAGS).size > 0
-      
+
       #get the account_id from the source ip address
       @account_id ||= get_account_id(event.source_host)
       record event
@@ -97,17 +93,17 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
     end
 
     def update_event(event_id, event)
-      # some amavis dont have queue_id so we look for message_id
       if event.tags.include?("amavis_run")
         record_amavis_run(event)
       else
         # request_id can be duplicated, but only one can be running
-        request = mongo_collection.find_one("request_id" => event_id, "running" => 1)
-        return if request.nil?
-        record_queue_run(request["_id"], event) if event.tags.include?("queue_run")
-        record_message_id(request["_id"], event) if event.tags.include?("message_id")
-        record_smtp_run(request["_id"], event) if event.tags.include?("smtp_run")
-        record_queue_finish(request["_id"], event) if event.tags.include?("queue_finish")
+        request_id = mongo_collection.find_one({"request_id" => event_id, "running" => 1}, {:fields => ["_id"]})["_id"]
+        return if request_id.nil?
+
+        record_queue_run(request_id, event) if event.tags.include?("queue_run")
+        record_message_id(request_id, event) if event.tags.include?("message_id")
+        record_smtp_run(request_id, event) if event.tags.include?("smtp_run")
+        record_queue_finish(request_id, event) if event.tags.include?("queue_finish")
       end
     end
 
@@ -203,7 +199,7 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
       mongo_collection.update({ "message_id" => message_id },
                               { "$set" => { "amavis_data" => fields }},
                               {:upsert => true})
-      
+
       # update the blocked_qty in daily_stats if the emails is spam
       unless fields["amavis_status"].downcase == "passed"
         date = time_to_date(fields["timestamp"])
@@ -251,7 +247,7 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
     end
 
     def mongo_collection
-        @mongodb.collection(@collection)
+      @mongodb.collection(@collection)
     end
 
     def time_to_utc(time)
