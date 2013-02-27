@@ -1,4 +1,5 @@
-MAIL_ID [A-Z0-9]{11}
+ACCOUNT_ID account_id:[a-z0-9]+
+MAIL_ID [A-Z0-9]{6,20}
 MAIL_ADDRESS \b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,4}\b
 USERNAME [a-zA-Z0-9_-]+
 USER %{USERNAME}
@@ -97,3 +98,4 @@ COMBINEDAPACHELOG %{IPORHOST:clientip} %{USER:ident} %{USER:auth} \[%{HTTPDATE:t
 
 # Log Levels
 LOGLEVEL ([D|d]ebug|DEBUG|[N|n]otice|NOTICE|[I|i]nfo|INFO|[W|w]arn?(?:ing)?|WARN?(?:ING)?|[E|e]rr?(?:or)?|ERR?(?:OR)?|[C|c]rit?(?:ical)?|CRIT?(?:ICAL)?)
+

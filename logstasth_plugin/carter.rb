@@ -59,7 +59,9 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
       return unless (event.tags & TAGS).size > 0
 
       #get the account_id from the source ip address
-      @account_id ||= get_account_id(event.source_host)
+      @account_id = get_account_id(event)
+      puts "ACCOUNT_ID #{@account_id}"
+      return if @account_id.nil?
       record event
     end
 
@@ -262,8 +264,11 @@ class LogStash::Outputs::Carter < LogStash::Outputs::Base
       event.fields["status"] == "sent"
     end
 
-    def get_account_id(src_ipaddress)
-      @mongodb.collection("accounts").find_one({:ipaddress => src_ipaddress}, {:fields => ["_id"]})["_id"]
+    def get_account_id(event)
+      return BSON::ObjectId.from_string(event.fields["carterapp_account_id"].first) unless event.fields["carterapp_account_id"].nil?
+      src_ipaddress = event.source_host
+      result = @mongodb.collection("accounts").find_one({:ipaddress => src_ipaddress}, {:fields => ["_id"]})
+      result.nil? ? nil : result["_id"]
     end
 
 end

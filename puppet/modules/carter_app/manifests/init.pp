@@ -1,7 +1,6 @@
 class carter_app {
 	include rvm_setup
 	include nginx
-	include nodejs
 	
 	user {'carter':
 		ensure => present,
@@ -63,21 +62,6 @@ class carter_app {
 			require => Package["nginx"]
 		}
 	}
-	
-	class nodejs {
-		file {"nodejs_repo":
-			ensure => present,
-			owner => "root",
-			mode => "0644",
-			path => "/etc/yum.repos.d/node.repo",
-			source => "puppet:///modules/carter_app/node.repo"
-		}
-
-		package {'nodejs':
-			ensure => present,
-			require => File['nodejs_repo']
-		}
-	}	
 }
 
 class rvm_setup {
