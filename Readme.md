@@ -15,7 +15,7 @@ Repositorio con la configuración de Puppet para la automatización de la plataf
 
 1. Descargar configuración de Puppet
 ```bash
-git clone git://github.com/pbruna/carter_platform.git
+git clone https://github.com/pbruna/carter_platform.git
 ```
 
 2. Copiar directorio contenido de directorio carter_platform/puppet a /etc/puppet
